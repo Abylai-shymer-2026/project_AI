@@ -1,9 +1,7 @@
 # app/routers/common.py
 from __future__ import annotations
 
-import random
 from aiogram import Router, F
-from aiogram.enums import ChatAction
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import Message, CallbackQuery
 
@@ -12,31 +10,10 @@ from ..token_store import tokens
 from ..keyboards import join_kb, phone_request_kb, remove_kb
 from ..formatting import sanitize_html
 from ..manager import handle_event
-from ..routers.influencers import start_selection  # запуск этапа подбора блогеров
+from ..routers.influencers import start_selection
 
 router = Router(name="common")
 
-<<<<<<< HEAD
-# УБРАЛИ КОНСТАНТУ GREETING
-=======
-GREETING = (
-    "👋🏻Вас приветствует медиа маркетинговое агентство Nonna Marketing!\n\n"
-    "Бот поможет Вам найти подходящих инфлюенсеров для вашей задачи.\n\n"
-    "📋Для дальнейшей работы пожалуйста пройдите регистрацию."
-)
-
-
-async def _strict_mode_guard(message: Message) -> bool:
-    """Возвращает True, если доступ запрещён в STRICT режиме (и уже отправлено предупреждение)."""
-    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id):
-        text = (
-            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер (@A_bylaikhan)."
-        )
-        await message.answer(text)
-        return True
-    return False
-
->>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
 
 @router.message(CommandStart(deep_link=True))
 async def start_with_payload(message: Message, command: CommandObject) -> None:
@@ -46,28 +23,22 @@ async def start_with_payload(message: Message, command: CommandObject) -> None:
 
     if settings.START_MODE.lower() == "strict":
         if tokens.consume(token, user_id):
-            # Сразу отправляем на регистрацию
-            await message.answer("Для начала работы, пожалуйста, пройдите короткую регистрацию.", reply_markup=join_kb())
+            await message.answer("Для начала работы, пожалуйста, пройдите короткую регистрацию.",
+                                 reply_markup=join_kb())
             return
-        await message.answer(
-            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер (@A_bylaikhan)."
-        )
+        await message.answer(f"🔒 Доступ по персональной ссылке. Обратитесь к менеджеру ({settings.MANAGER_CONTACT}).")
         return
 
-    # dev режим — просто даём доступ
     tokens.grant_for_dev(user_id)
     await message.answer("Для начала работы, пожалуйста, пройдите короткую регистрацию.", reply_markup=join_kb())
 
 
 @router.message(CommandStart())
 async def start_plain(message: Message) -> None:
-    user_id = message.from_user.id
     if settings.START_MODE.lower() == "strict":
-        await message.answer(
-            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер (@A_bylaikhan)."
-        )
+        await message.answer(f"🔒 Доступ по персональной ссылке. Обратитесь к менеджеру ({settings.MANAGER_CONTACT}).")
         return
-    tokens.grant_for_dev(user_id)
+    tokens.grant_for_dev(message.from_user.id)
     await message.answer("Для начала работы, пожалуйста, пройдите короткую регистрацию.", reply_markup=join_kb())
 
 
@@ -75,69 +46,32 @@ async def start_plain(message: Message) -> None:
 async def on_join(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
     if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(user_id):
-        await cb.answer("Требуется персональная ссылка. Обратитесь к менеджеру.", show_alert=True)
+        await cb.answer("Требуется персональная ссылка.", show_alert=True)
         return
 
-<<<<<<< HEAD
-    # ДОБАВЛЯЕМ "TYPING..."
-    await cb.message.bot.send_chat_action(cb.from_user.id, action=ChatAction.TYPING)
-=======
-    # llm-менеджер теперь возвращает три значения
     text, ask_phone, next_action = await handle_event(user_id=user_id, system_event="joined")
-    text = sanitize_html(text or "").strip()
-    if not text:
-        text = random.choice([
-            "Здравствуйте! Рады познакомиться.",
-            "Привет! Очень рады вас видеть.",
-            "Рады знакомству!",
-        ])
->>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
+    text = sanitize_html(text or "Здравствуйте! Давайте начнем.")
 
-    # llm-менеджер теперь сгенерирует уникальное приветствие
-    text, ask_phone, next_action = await handle_event(user_id=user_id, system_event="joined")
-    text = sanitize_html(text or "").strip() or "Здравствуйте! Давайте начнем. Как я могу к вам обращаться?"
-
-    # Убираем старую кнопку "Join" и отправляем первое сообщение от ИИ
     await cb.message.edit_text(text)
 
     if ask_phone:
-        await cb.message.answer(
-            "Можно отправить номер контакта одной кнопкой.",
-            reply_markup=phone_request_kb()
-        )
+        await cb.message.answer("Можно отправить номер контакта одной кнопкой.", reply_markup=phone_request_kb())
 
     if next_action == "start_selection":
-        # ВЫЗОВ БЕЗ STATE
-        await start_selection(message)
-
+        await start_selection(cb.message)
     await cb.answer()
 
 
 @router.message(F.contact)
 async def on_contact(message: Message) -> None:
-    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id):
-        await message.answer(
-            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер (@A_bylaikhan)."
-        )
-        return
+    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id): return
 
-    # ДОБАВЛЯЕМ "TYPING..."
-    await message.bot.send_chat_action(message.from_user.id, action=ChatAction.TYPING)
-
-    phone = message.contact.phone_number
-    text, ask_phone, next_action = await handle_event(
+    text, _, next_action = await handle_event(
         user_id=message.from_user.id,
-        phone=phone,
+        phone=message.contact.phone_number,
         system_event="contact",
     )
-    text = sanitize_html(text or "").strip()
-    if not text:
-        text = random.choice([
-            "Спасибо! Продолжим.",
-            "Благодарю, двигаемся дальше.",
-            "Отлично, идём дальше.",
-        ])
-
+    text = sanitize_html(text or "Спасибо! Продолжим.")
     await message.answer(text, reply_markup=remove_kb())
 
     if next_action == "start_selection":
@@ -146,27 +80,12 @@ async def on_contact(message: Message) -> None:
 
 @router.message(F.text)
 async def any_text(message: Message) -> None:
-    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id):
-        await message.answer(
-            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер (@A_bylaikhan)."
-        )
-        return
-
-    # ДОБАВЛЯЕМ "TYPING..."
-    await message.bot.send_chat_action(message.from_user.id, action=ChatAction.TYPING)
+    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id): return
 
     text, ask_phone, next_action = await handle_event(
-        user_id=message.from_user.id,
-        user_text=message.text,
-        system_event="message",
+        user_id=message.from_user.id, user_text=message.text
     )
-    text = sanitize_html(text or "").strip()
-    if not text:
-        text = random.choice([
-            "Продолжим.",
-            "Давайте продолжим.",
-            "Хорошо, идём дальше.",
-        ])
+    text = sanitize_html(text or "Продолжим.")
 
     reply_markup = phone_request_kb() if ask_phone else None
     await message.answer(text, reply_markup=reply_markup)

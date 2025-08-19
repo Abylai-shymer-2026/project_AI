@@ -1,251 +1,238 @@
 # app/routers/influencers.py
 from __future__ import annotations
 import io
-from typing import Dict, Optional, List
-import pandas as pd  # ИСПРАВЛЕНО: Добавлен импорт pandas
+from typing import Dict
+import pandas as pd
 from aiogram import Router, F
 from aiogram.enums import ChatAction
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
+                           InlineKeyboardButton, BufferedInputFile)
 
 from .. import llm
-# Эти функции должны быть адаптированы для работы с байтами в памяти
-# Например, export_excel_to_bytes(df) -> bytes
+# Убедитесь, что в вашем файле app/influencers.py есть эти функции
 from ..influencers import (
-    list_cities, query_influencers, paginate, export_excel, export_pdf
+    list_cities, query_influencers, paginate, list_topics,
+    export_excel, export_pdf
 )
 
 router = Router(name="influencers")
 
-# ВАЖНОЕ ПРИМЕЧАНИЕ:
-# Хранение состояния в глобальном словаре _state - рискованно.
-# Если бот перезапустится, все пользователи потеряют свой прогресс подбора.
-# Рекомендуется переделать этот механизм на машину состояний (FSM) из aiogram.
-# Это более сложная задача, которую можно выполнить следующим шагом.
-_state: Dict[int, Dict] = {}
+# --- Управление состоянием подбора в памяти ---
+_user_states: Dict[int, Dict] = {}
 
 
-def _get_state(uid: int) -> Dict:
-    return _state.setdefault(uid, {
-        "filters": {
-            "cities": None, "topics": None, "age_range": None,
-            "followers_range": None, "language": None,
-        },
-        "pending_step": "cities", "page": 1,
-        "last_list_len": 0, "selection_started": False,
-    })
+def get_user_state(user_id: int) -> Dict:
+    """Получает или создает состояние для пользователя."""
+    if user_id not in _user_states:
+        _user_states[user_id] = {
+            "filters": {},
+            "page": 1,
+            "advanced_choice_made": False,
+            "advanced_mode": False
+        }
+    return _user_states[user_id]
 
 
-# ... (остальные функции-хелперы без изменений: city_buttons, language_buttons, etc.) ...
+def get_next_step(state: Dict) -> str:
+    """Определяет следующий шаг сценария на основе заполненных фильтров."""
+    filters = state["filters"]
+    # Используем .get() для безопасного доступа
+    if not filters.get("cities"): return "city"
+    if not filters.get("topics"): return "topic"
+    if not filters.get("age_range"): return "age"
+    if not filters.get("gender"): return "gender"
+    if not filters.get("language"): return "language"
+    if not state.get("advanced_choice_made"): return "advanced_or_results"
+    if state.get("advanced_mode"):
+        if not filters.get("followers_range"): return "followers"
+        if not filters.get("price_range"): return "budget"  # 'budget' соответствует 'price_range'
+        if not filters.get("service"): return "service"
+    return "done"
+
+
+# --- Клавиатуры ---
+
 def city_buttons() -> InlineKeyboardMarkup:
-    cities = list_cities()[:48]
-    rows = [];
-    row = []
-    for i, c in enumerate(cities, 1):
-        row.append(InlineKeyboardButton(text=c, callback_data=f"city:{c}"))
-        if i % 3 == 0: rows.append(row); row = []
-    if row: rows.append(row)
-    rows.append([InlineKeyboardButton(text="Готово ✅", callback_data="city:done")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    cities = list_cities()[:12]
+    buttons = [InlineKeyboardButton(text=c, callback_data=f"select:{c}") for c in cities]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 3] for i in range(0, len(buttons), 3)])
+
+
+def topic_buttons() -> InlineKeyboardMarkup:
+    # Убедитесь, что функция list_topics() существует в app/influencers.py
+    topics = list_topics()[:8]
+    buttons = [InlineKeyboardButton(text=t, callback_data=f"select:{t}") for t in topics]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 2] for i in range(0, len(buttons), 2)])
+
+
+def gender_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Мужской 👨", callback_data="select:Мужской"),
+         InlineKeyboardButton(text="Женский 👩", callback_data="select:Женский")],
+        [InlineKeyboardButton(text="Пропустить ➡️", callback_data="select:пропустить")]])
 
 
 def language_buttons() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Казахский", callback_data="lang:Казахский"),
-         InlineKeyboardButton(text="Русский", callback_data="lang:Русский"),
-         InlineKeyboardButton(text="Двуязычный", callback_data="lang:Двуязычный")],
-        [InlineKeyboardButton(text="Пропустить", callback_data="lang:skip")]
-    ])
+        [InlineKeyboardButton(text="Казахский", callback_data="select:Казахский"),
+         InlineKeyboardButton(text="Русский", callback_data="select:Русский")],
+        [InlineKeyboardButton(text="Двуязычный", callback_data="select:Двуязычный"),
+         InlineKeyboardButton(text="Пропустить ➡️", callback_data="select:пропустить")]])
 
 
-def paging_keyboard(page: int, pages: int) -> InlineKeyboardMarkup:
-    rows = [[]]
+def advanced_or_results_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Получить результат", callback_data="select:get_results")],
+        [InlineKeyboardButton(text="🔍 Продвинутый поиск", callback_data="select:advanced_search")]])
+
+
+def results_keyboard(page: int, max_pages: int) -> InlineKeyboardMarkup:
+    buttons = []
+    nav = []
     if page > 1:
-        rows[0].append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page:{page - 1}"))
-    if page < pages:
-        rows[0].append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"page:{page + 1}"))
-    rows.append([
-        InlineKeyboardButton(text="Экспорт PDF", callback_data="export:pdf"),
-        InlineKeyboardButton(text="Экспорт Excel", callback_data="export:xlsx"),
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page:{page - 1}"))
+    if page < max_pages:
+        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"page:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([
+        InlineKeyboardButton(text="📄 Экспорт PDF", callback_data="export:pdf"),
+        InlineKeyboardButton(text="📊 Экспорт Excel", callback_data="export:xlsx"),
     ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    buttons.append([InlineKeyboardButton(text="🔄 Новый подбор", callback_data="new_search")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def _buttons_for(step: str) -> InlineKeyboardMarkup | None:
-    if step == "cities": return city_buttons()
-    if step == "language": return language_buttons()
-    return None
+# --- Главный цикл обработки ---
 
+async def process_selection_step(message: Message, user_input: str | None, event: str):
+    state = get_user_state(message.from_user.id)
+    step_before = get_next_step(state)
+
+    # Обновляем состояние на основе ввода пользователя
+    if step_before == "advanced_or_results" and user_input in ["get_results", "advanced_search"]:
+        state["advanced_choice_made"] = True
+        state["advanced_mode"] = (user_input == "advanced_search")
+    elif user_input:
+        # Пропускаемые шаги
+        if user_input.lower() in ["пропустить", "любой", "skip"] and step_before in ["age", "gender", "language",
+                                                                                     "followers", "budget", "service"]:
+            state["filters"][
+                step_before + "_range" if "age" in step_before or "follower" in step_before else step_before] = "skipped"
+        else:
+            route = await llm.postreg_router_decide(
+                filters=state["filters"], user_text=user_input, user_event=event,
+                pending_step=step_before, cities_from_db=list_cities())
+            for key, value in (route.get("updates") or {}).items():
+                if value: state["filters"][key] = value
+
+    step_after = get_next_step(state)
+
+    # Генерируем ответ ИИ
+    if step_after == "done":
+        await message.answer("Отлично, все критерии заданы! Готовлю для вас список... 🕵️‍♀️")
+        await show_results(message, state)
+        return
+
+    resp = await llm.postreg_responder_reply(
+        state={"filters": state["filters"], "pending_step": step_after}, user_question=None)
+
+    kb_map = {
+        "city": city_buttons(), "topic": topic_buttons(), "gender": gender_buttons(),
+        "language": language_buttons(), "advanced_or_results": advanced_or_results_keyboard()
+    }
+    await message.answer(resp.get("assistant_text", "Продолжим..."), reply_markup=kb_map.get(step_after))
+
+
+# --- Обработчики Aiogram ---
 
 async def start_selection(message: Message):
-    # ДОБАВЛЯЕМ "TYPING..."
-    await message.bot.send_chat_action(message.from_user.id, action=ChatAction.TYPING)
-
-    st = _get_state(message.from_user.id)
-    st["pending_step"] = "cities"
-    st["selection_started"] = True
-
-    # Генерируем текст через LLM для большей вариативности
-    resp = await llm.postreg_responder_reply(state=st, user_question=None)
-    kb = _buttons_for(st["pending_step"]) if resp.get("ask_buttons") != "none" else None
-
-    await message.answer(resp["assistant_text"], reply_markup=kb)
+    _user_states.pop(message.from_user.id, None)
+    await process_selection_step(message, user_input=None, event="start")
 
 
-@router.callback_query(F.data.startswith("city:"))
-async def on_city(cb: CallbackQuery):
-    # ДОБАВЛЯЕМ "TYPING..."
-    await cb.message.bot.send_chat_action(cb.from_user.id, action=ChatAction.TYPING)
-
-    st = _get_state(cb.from_user.id)
-    val = cb.data.split(":", 1)[1]
-    if val != "done":
-        route = await llm.postreg_router_decide(
-            filters=st["filters"], user_text=val, user_event="button",
-            pending_step=st["pending_step"], cities_from_db=list_cities(),
-        )
-        updates = route.get("updates") or {}
-        for k, v in updates.items(): st["filters"][k] = v
-        st["pending_step"] = route.get("next_step") or st["pending_step"]
-        await cb.answer(f"Добавлено: {val}")
-        return
-
-    if not st["filters"]["cities"]:
-        await cb.answer("Выберите хотя бы один город", show_alert=True)
-        return
-
-    st["pending_step"] = "topics"
-    resp = await llm.postreg_responder_reply(state=st, user_question=None)
-    kb = _buttons_for(st["pending_step"]) if resp.get("ask_buttons") != "none" else None
-    await cb.message.edit_text(resp["assistant_text"], reply_markup=kb)
+@router.message(F.text)
+async def on_text_message(message: Message):
+    if message.from_user.id in _user_states:
+        await process_selection_step(message, user_input=message.text, event="message")
 
 
-@router.callback_query(F.data.startswith("lang:"))
-async def on_lang(cb: CallbackQuery):
-    # ДОБАВЛЯЕМ "TYPING..."
-    await cb.message.bot.send_chat_action(cb.from_user.id, action=ChatAction.TYPING)
-
-    st = _get_state(cb.from_user.id)
-    code = cb.data.split(":", 1)[1]
-    val = None if code == "skip" else code
-
-    route = await llm.postreg_router_decide(
-        filters=st["filters"], user_text=(val or "Пропустить"), user_event="button",
-        pending_step=st["pending_step"], cities_from_db=list_cities(),
-    )
-    for k, v in (route.get("updates") or {}).items(): st["filters"][k] = v
-    st["pending_step"] = route.get("next_step") or st["pending_step"]
-
-    if st["pending_step"] == "done":
-        await cb.message.edit_text("Отлично, все фильтры заполнены! Сейчас я подготовлю для вас список.")
-        await show_results(cb.message, st)
-        await cb.answer()
-        return
-
-    resp = await llm.postreg_responder_reply(state=st, user_question=None)
-    kb = _buttons_for(st["pending_step"]) if resp.get("ask_buttons") != "none" else None
-    await cb.message.edit_text(resp["assistant_text"], reply_markup=kb)
+@router.callback_query(F.data.startswith("select:"))
+async def on_button_click(cb: CallbackQuery):
+    if cb.from_user.id in _user_states:
+        user_choice = cb.data.split(":", 1)[1]
+        await cb.message.edit_text(f"<i>Ваш выбор: {user_choice}</i>")
+        await process_selection_step(cb.message, user_input=user_choice, event="button")
     await cb.answer()
 
 
+@router.callback_query(F.data == "new_search")
+async def on_new_search(cb: CallbackQuery):
+    await cb.message.delete()
+    await start_selection(cb.message)
+    await cb.answer()
+
+
+async def show_results(message: Message, state: Dict, edit: bool = False):
+    filters_to_query = {k: v for k, v in state.get("filters", {}).items() if v != "skipped"}
+    df = query_influencers(**filters_to_query)
+
+    if df.empty:
+        await message.answer("К сожалению, по вашим фильтрам никого не найдено. 😕", reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔄 Новый подбор", callback_data="new_search")]]))
+        return
+
+    page = state.get("page", 1)
+    chunk, max_pages = paginate(df, page, 5)
+
+    lines = []
+    for _, r in chunk.iterrows():
+        followers = f'{int(r["followers"]):,}'.replace(',', ' ') if pd.notnull(r.get("followers")) else "-"
+        lines.append(
+            f"👤 <b>{r.get('name', '')}</b> (@{r.get('username', '')}) - {r.get('city', '')}\n"
+            f"<b>Темы:</b> {r.get('topics', '')}\n"
+            f"<b>Подписчики:</b> {followers} | <b>Язык:</b> {r.get('language', '-')}"
+        )
+
+    text = "Вот кто нашёлся по вашим критериям:\n\n" + "\n\n".join(lines) + f"\n\n<i>Страница {page} из {max_pages}</i>"
+
+    if edit:
+        await message.edit_text(text, reply_markup=results_keyboard(page, max_pages))
+    else:
+        await message.answer(text, reply_markup=results_keyboard(page, max_pages))
+
+
 @router.callback_query(F.data.startswith("page:"))
-async def on_page(cb: CallbackQuery):
-    await cb.message.bot.send_chat_action(cb.from_user.id, action=ChatAction.TYPING)
-    st = _get_state(cb.from_user.id)
-    try:
-        st["page"] = int(cb.data.split(":", 1)[1])
-    except:
-        pass
-    await show_results(cb.message, st, edit=True)
+async def on_page_switch(cb: CallbackQuery):
+    state = get_user_state(cb.from_user.id)
+    state["page"] = int(cb.data.split(":")[1])
+    await show_results(cb.message, state, edit=True)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("export:"))
 async def on_export(cb: CallbackQuery):
-    await cb.answer("Готовлю файл, это может занять несколько секунд...")
-    await cb.message.bot.send_chat_action(cb.from_user.id, action=ChatAction.UPLOAD_DOCUMENT)
+    await cb.answer("Готовлю файл...")
+    state = get_user_state(cb.from_user.id)
+    filters_to_query = {k: v for k, v in state.get("filters", {}).items() if v != "skipped"}
+    df = query_influencers(**filters_to_query)
 
-    st = _get_state(cb.from_user.id)
-    df = query_influencers(**st["filters"])
     if df.empty:
-        await cb.message.answer("Нет данных для экспорта. Попробуйте изменить фильтры.")
+        await cb.message.answer("Нет данных для экспорта.")
         return
 
-    # ИЗМЕНЕНО: Отправка файлов из памяти, а не с диска
-    # ПРИМЕЧАНИЕ: Ваши функции `export_pdf` и `export_excel` должны быть
-    # изменены, чтобы возвращать байты (bytes) вместо сохранения на диск.
-    # Например: `def export_pdf_to_bytes(df) -> bytes:`
     if cb.data.endswith("pdf"):
-        # file_bytes = export_pdf_to_bytes(df) # <-- Ваша измененная функция
-        # document = BufferedInputFile(file_bytes, filename="influencers.pdf")
-        # await cb.message.answer_document(document=document)
-        await cb.message.answer("Функция экспорта в PDF в разработке.")  # Временная заглушка
-    else:
+        # Логика для PDF
+        pdf_bytes = io.BytesIO()
+        # Тут должна быть ваша реализация export_pdf, пишущая в BytesIO
+        # export_pdf(df, pdf_bytes)
+        # pdf_bytes.seek(0)
+        # await cb.message.answer_document(BufferedInputFile(pdf_bytes, "influencers.pdf"))
+        await cb.message.answer("Экспорт в PDF пока в разработке.")
+
+    else:  # Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, index=False, sheet_name='Influencers')
         output.seek(0)
-        document = BufferedInputFile(output.read(), filename="influencers.xlsx")
-        await cb.message.answer_document(document=document)
-
-
-async def show_results(message: Message, st: Dict, edit: bool = False):
-    await message.bot.send_chat_action(message.from_user.id, action=ChatAction.TYPING)
-
-    df = query_influencers(**st["filters"])
-    page = st.get("page", 1)
-    chunk, pages = paginate(df, page, 5)
-    st["last_list_len"] = len(df)
-
-    if chunk.empty:
-        text = "По вашим фильтрам никого не нашли. 😕 Попробуйте выбрать другие города или темы."
-        if edit:
-            await message.edit_text(text)
-        else:
-            await message.answer(text)
-        return
-
-    lines = []
-    for _, r in chunk.iterrows():
-        followers = f'{int(r["followers"]):,}'.replace(',', ' ') if pd.notnull(r["followers"]) else "-"
-        lines.append(
-            f"👤 <b>{r.get('name', '')}</b> (@{r.get('username', '')}) - {r.get('city', '')}\n"
-            f"<b>Темы:</b> {r.get('topics', '')}\n"
-            f"<b>Подписчики:</b> {followers} | <b>ER:</b> {r.get('er', '-')}\n"
-            f"<a href='{r.get('profile_url', '')}'>Ссылка на профиль</a>"
-        )
-    text = "Вот кто нашёлся по вашим критериям:\n\n" + "\n\n".join(lines) + f"\n\n<i>Страница {page} из {pages}</i>"
-    kb = paging_keyboard(page, pages)
-    if edit:
-        await message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
-    else:
-        await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
-
-
-@router.message()
-async def on_message(message: Message):
-    # ДОБАВЛЯЕМ "TYPING..."
-    await message.bot.send_chat_action(message.from_user.id, action=ChatAction.TYPING)
-
-    st = _get_state(message.from_user.id)
-    if not st.get("selection_started"):
-        await message.answer("Пожалуйста, сначала завершите регистрацию.")
-        return
-
-    txt = (message.text or "").strip()
-    route = await llm.postreg_router_decide(
-        filters=st["filters"], user_text=txt, user_event="message",
-        pending_step=st["pending_step"], cities_from_db=list_cities(),
-    )
-    for k, v in (route.get("updates") or {}).items(): st["filters"][k] = v
-    st["pending_step"] = route.get("next_step") or st["pending_step"]
-
-    user_q = txt if route.get("intent") in {"question", "both"} else None
-    resp = await llm.postreg_responder_reply(state=st, user_question=user_q)
-
-    if st["pending_step"] == "done":
-        await message.answer(resp["assistant_text"])
-        await show_results(message, st)
-        return
-
-    kb = _buttons_for(st["pending_step"]) if resp.get("ask_buttons") != "none" else None
-    await message.answer(resp["assistant_text"], reply_markup=kb)
+        await cb.message.answer_document(BufferedInputFile(output, "influencers.xlsx"))

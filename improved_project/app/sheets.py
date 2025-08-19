@@ -82,31 +82,3 @@ def append_user(profile: Dict, tg_id: int) -> bool:
         # В реальном проекте здесь лучше логировать ошибку
         print(f"Error appending user to Google Sheets: {e}")
         return False
-
-def append_user(profile: Dict, tg_id: int) -> bool:
-    """
-    Сохраняет данные пользователя в лист 'users' в Google Sheets.
-    """
-    try:
-        # Устанавливаем часовой пояс для корректной даты (Алматы)
-        tz = pytz.timezone('Asia/Almaty')
-        created_at = datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
-
-        user_data = {
-            "tg_id": tg_id,
-            "fio": profile.get("name"),
-            "company name": profile.get("company"), # Убедитесь, что название столбца в таблице именно такое
-            "industry": profile.get("industry"),
-            "position": profile.get("position"),
-            "phone": profile.get("phone"),
-            "created_at": created_at,
-        }
-        # Используем существующую функцию для добавления строки
-        worksheet = _get_spreadsheet().worksheet("users") # Укажите точное имя листа
-        header = worksheet.row_values(1)
-        values = [user_data.get(col, "") for col in header]
-        worksheet.append_row(values, value_input_option="USER_ENTERED")
-        return True
-    except Exception as e:
-        print(f"Error appending user to Google Sheets: {e}") # Логирование ошибки
-        return False
