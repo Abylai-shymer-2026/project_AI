@@ -1,6 +1,7 @@
 # app/routers/common.py
 from __future__ import annotations
 
+import random
 from aiogram import Router, F
 from aiogram.enums import ChatAction
 from aiogram.filters import CommandStart, CommandObject
@@ -15,7 +16,27 @@ from ..routers.influencers import start_selection  # запуск этапа п�
 
 router = Router(name="common")
 
+<<<<<<< HEAD
 # УБРАЛИ КОНСТАНТУ GREETING
+=======
+GREETING = (
+    "👋🏻Вас приветствует медиа маркетинговое агентство Nonna Marketing!\n\n"
+    "Бот поможет Вам найти подходящих инфлюенсеров для вашей задачи.\n\n"
+    "📋Для дальнейшей работы пожалуйста пройдите регистрацию."
+)
+
+
+async def _strict_mode_guard(message: Message) -> bool:
+    """Возвращает True, если доступ запрещён в STRICT режиме (и уже отправлено предупреждение)."""
+    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id):
+        text = (
+            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер (@A_bylaikhan)."
+        )
+        await message.answer(text)
+        return True
+    return False
+
+>>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
 
 @router.message(CommandStart(deep_link=True))
 async def start_with_payload(message: Message, command: CommandObject) -> None:
@@ -57,8 +78,20 @@ async def on_join(cb: CallbackQuery) -> None:
         await cb.answer("Требуется персональная ссылка. Обратитесь к менеджеру.", show_alert=True)
         return
 
+<<<<<<< HEAD
     # ДОБАВЛЯЕМ "TYPING..."
     await cb.message.bot.send_chat_action(cb.from_user.id, action=ChatAction.TYPING)
+=======
+    # llm-менеджер теперь возвращает три значения
+    text, ask_phone, next_action = await handle_event(user_id=user_id, system_event="joined")
+    text = sanitize_html(text or "").strip()
+    if not text:
+        text = random.choice([
+            "Здравствуйте! Рады познакомиться.",
+            "Привет! Очень рады вас видеть.",
+            "Рады знакомству!",
+        ])
+>>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
 
     # llm-менеджер теперь сгенерирует уникальное приветствие
     text, ask_phone, next_action = await handle_event(user_id=user_id, system_event="joined")
@@ -97,7 +130,13 @@ async def on_contact(message: Message) -> None:
         phone=phone,
         system_event="contact",
     )
-    text = sanitize_html(text or "").strip() or "Спасибо! Продолжим."
+    text = sanitize_html(text or "").strip()
+    if not text:
+        text = random.choice([
+            "Спасибо! Продолжим.",
+            "Благодарю, двигаемся дальше.",
+            "Отлично, идём дальше.",
+        ])
 
     await message.answer(text, reply_markup=remove_kb())
 
@@ -121,7 +160,13 @@ async def any_text(message: Message) -> None:
         user_text=message.text,
         system_event="message",
     )
-    text = sanitize_html(text or "").strip() or "Продолжим."
+    text = sanitize_html(text or "").strip()
+    if not text:
+        text = random.choice([
+            "Продолжим.",
+            "Давайте продолжим.",
+            "Хорошо, идём дальше.",
+        ])
 
     reply_markup = phone_request_kb() if ask_phone else None
     await message.answer(text, reply_markup=reply_markup)

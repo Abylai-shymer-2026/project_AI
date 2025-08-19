@@ -1,5 +1,6 @@
 # app/routers/influencers.py
 from __future__ import annotations
+<<<<<<< HEAD
 import io
 import pandas as pd
 from typing import Dict
@@ -7,6 +8,13 @@ from aiogram import Router, F
 from aiogram.enums import ChatAction
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
                            InlineKeyboardButton, BufferedInputFile)
+=======
+import asyncio
+import json
+import os
+import random
+from typing import Dict, List, Optional, Tuple, Any
+>>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
 
 from ..influencers import (
     list_cities, query_influencers, paginate, list_topics
@@ -219,6 +227,7 @@ async def show_results(message: Message, state: FSMContext, edit: bool = False):
             f"<b>Темы:</b> {r.get('topics', '')}\n"
             f"<b>Подписчики:</b> {followers} | <b>Язык:</b> {r.get('language', '-')}"
         )
+<<<<<<< HEAD
 
     text = "Вот кто нашёлся по вашим критериям:\n\n" + "\n\n".join(
         text_lines) + f"\n\n<i>Страница {page} из {max_pages}</i>"
@@ -229,6 +238,31 @@ async def show_results(message: Message, state: FSMContext, edit: bool = False):
         await message.answer(text, reply_markup=results_keyboard(page, max_pages))
 
     await state.set_state(InfluencerSearch.showing_results)
+=======
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {
+                "assistant_text": random.choice([
+                    "Давайте продолжим. Поделитесь, пожалуйста, как называется ваш бизнес и чем он занимается?",
+                    "Расскажите, как называется ваш бизнес и в какой сфере он работает?",
+                    "Чтобы двигаться дальше, подскажите название и направление вашего бизнеса.",
+                ]),
+                "ask_phone_button": False,
+            }
+        data.setdefault("assistant_text", "")
+        data.setdefault("ask_phone_button", False)
+        if not str(data["assistant_text"]).strip():
+            data["assistant_text"] = random.choice([
+                "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?",
+                "Давайте продолжим — расскажите, как называется ваша компания и что вы делаете?",
+                "Чтобы помочь, подскажите название и сферу деятельности вашего бизнеса.",
+            ])
+        # ask_phone_button — только если шаг phone
+        if next_step != "phone":
+            data["ask_phone_button"] = False
+        return data
+>>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
 
 
 @router.callback_query(InfluencerSearch.showing_results, F.data.startswith("page:"))

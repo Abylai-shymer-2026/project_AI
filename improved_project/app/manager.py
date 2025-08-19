@@ -1,6 +1,7 @@
 # app/manager.py
 from __future__ import annotations
 import time
+import random
 from typing import Dict, Optional, Tuple, List
 from . import llm, sheets
 import inspect
@@ -104,12 +105,22 @@ async def handle_event(
         first_turn=first_turn,
     )
 
+<<<<<<< HEAD
     # ИЗМЕНЕНИЕ: Добавляем проверку на None, чтобы избежать падения в будущем.
     # Это "защита" на случай, если responder_reply по какой-то причине вернет None.
     if reply is None:
         reply = {"assistant_text": "Одну минуту, обрабатываю ваш запрос...", "ask_phone_button": False}
 
     text = (reply.get("assistant_text") or "").strip() or "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?"
+=======
+    text = (reply.get("assistant_text") or "").strip()
+    if not text:
+        text = random.choice([
+            "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?",
+            "Давайте продолжим — расскажите, как называется ваша компания и что вы делаете?",
+            "Чтобы помочь, подскажите название и сферу деятельности вашего бизнеса.",
+        ])
+>>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
     ask_phone = bool(reply.get("ask_phone_button"))
 
     profile["last_question"] = text.strip().split("\n")[-1].strip()
