@@ -9,6 +9,7 @@ from .config import settings
 from .logger import setup_logging
 from .routers import common as common_router
 from .routers import influencers
+from .middlewares import TypingMiddleware
 
 async def main() -> None:
     setup_logging()
@@ -19,6 +20,8 @@ async def main() -> None:
 
     bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.middleware(TypingMiddleware())
+    dp.callback_query.middleware(TypingMiddleware())
 
     dp.include_router(common_router.router)
     dp.include_router(influencers.router)
