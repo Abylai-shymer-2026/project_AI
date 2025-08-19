@@ -296,20 +296,16 @@ async def responder_reply(
             "RESPONDER_REG_PROMPT_PATH",
             _RESPONDER_REG_FALLBACK,
         )
-        payload = {
-            "state": {
-                "name": state.get("name"),
-                "company": state.get("company"),
-                "industry": state.get("industry"),
-                "position": state.get("position"),
-                "phone": state.get("phone"),
-            },
-            "next_step": next_step,
-            "user_question": user_question,
-            "last_assistant_question": (last_assistant_question or "").strip(),
-            "first_turn": bool(first_turn),
+        payload = {"state": {
+            "name": state.get("name"),
+            "company": state.get("company"),
+            "industry": state.get("industry"),
+            "position": state.get("position"),
+            "phone": state.get("phone"),
+        }, "next_step": next_step, "user_question": user_question,
+            "last_assistant_question": (last_assistant_question or "").strip(), "first_turn": bool(first_turn),
             "length_hints": {"general": "30-40", "answer": "20-25"},
-        }
+            "style_seed": f"{(state.get('name') or '')}-{len((user_question or ''))}"}
         messages = [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

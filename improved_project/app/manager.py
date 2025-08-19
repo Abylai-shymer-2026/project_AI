@@ -15,11 +15,13 @@ MEM_TTL = 7 * 24 * 3600  # 7 дней
 
 def _get_stage(profile: Profile) -> str:
     """registration | postreg"""
+    # ИЗМЕНЕНО: Порядок проверки, чтобы 'name' всегда было первым
     need = [k for k in ("name", "company", "industry", "position", "phone") if not profile.get(k)]
     return "registration" if need else "postreg"
 
 
 def _current_step(profile: Profile) -> Optional[str]:
+    # ИЗМЕНЕНО: Явно указываем порядок шагов, начиная с имени
     if not profile.get("name"):
         return "name"
     if not profile.get("company"):
@@ -83,10 +85,8 @@ async def handle_event(
     """
     profile = get_profile(user_id)
 
-    # вход пользователя в историю
     if user_text:
         _hist_add(user_id, "user", user_text)
-    # телефон пришёл (кнопкой) — сохраним, если ещё нет
     if phone and not profile.get("phone"):
         profile["phone"] = phone
 
@@ -96,33 +96,28 @@ async def handle_event(
 
     stage_before = _get_stage(profile)
 
-    # === 1) Router: понять намерение, новые слоты, следующий шаг ===
     route = await llm.router_decide(
         state={k: profile.get(k) for k in ("name", "company", "industry", "position", "phone")},
         stage=stage_before,
         user_text=user_text or "",
         system_event=system_event or "message",
-        model=None,  # из .env ROUTER_MODEL или RESPONDER_MODEL
+        model=None,
         max_tokens=500,
     )
 
-    # слоты: применяем
     slots = route.get("slots") or {}
     for k in ("name", "company", "industry", "position", "phone"):
         v = slots.get(k)
-        if v:
+        if v and not profile.get(k): # Применяем только если слот был пуст
             if k == "name":
-                # взять первое слово, красиво капитализовать
                 v = v.split()[0].strip()
                 if v:
                     v = v[0].upper() + v[1:]
             profile[k] = v
 
-    # стадия и шаг
     stage_target = route.get("stage_target") or _get_stage(profile)
-    next_step = route.get("next_step") or (_current_step(profile) or "done")
+    next_step = _current_step(profile) or "done"
 
-    # === 2) Responder: сформировать ответ
     reply = await llm.responder_reply(
         stage=stage_target,
         state={k: profile.get(k) for k in ("name", "company", "industry", "position", "phone")},
@@ -130,18 +125,16 @@ async def handle_event(
         user_question=route.get("user_question"),
         last_assistant_question=profile.get("last_question") or "",
         first_turn=first_turn,
-        model_reg=None,   # возьмётся RESPONDER_MODEL_REG или RESPONDER_MODEL
-        model_post=None,  # если добавите отдельный промпт для пострег — передадим здесь
+        model_reg=None,
+        model_post=None,
         max_tokens=600,
     )
 
     text = (reply.get("assistant_text") or "").strip() or "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?"
     ask_phone = bool(reply.get("ask_phone_button"))
 
-    # обновим последний вопрос (последняя строка текста)
     profile["last_question"] = text.strip().split("\n")[-1].strip()
 
-    # === 3) Если регистрация завершена — один раз пишем в Google Sheets
     next_action: Optional[str] = None
     if _current_step(profile) is None and not profile.get("saved_to_sheet"):
         try:
@@ -157,10 +150,8 @@ async def handle_event(
         except Exception:
             profile["saved_to_sheet"] = False
 
-    # ассистент в историю
     _hist_add(user_id, "assistant", text)
 
-    # если шаг не phone — точно скрываем кнопку телефона
     if next_step != "phone":
         ask_phone = False
 
