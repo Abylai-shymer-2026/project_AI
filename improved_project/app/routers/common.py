@@ -74,7 +74,8 @@ async def on_join(cb: CallbackQuery) -> None:
         )
 
     if next_action == "start_selection":
-        await start_selection(cb.message)
+        # ВЫЗОВ БЕЗ STATE
+        await start_selection(message)
 
     await cb.answer()
 

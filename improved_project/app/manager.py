@@ -15,13 +15,11 @@ MEM_TTL = 7 * 24 * 3600  # 7 дней
 
 def _get_stage(profile: Profile) -> str:
     """registration | postreg"""
-    # ИЗМЕНЕНО: Порядок проверки, чтобы 'name' всегда было первым
     need = [k for k in ("name", "company", "industry", "position", "phone") if not profile.get(k)]
     return "registration" if need else "postreg"
 
 
 def _current_step(profile: Profile) -> Optional[str]:
-    # ИЗМЕНЕНО: Явно указываем порядок шагов, начиная с имени
     if not profile.get("name"):
         return "name"
     if not profile.get("company"):
@@ -39,14 +37,8 @@ def get_profile(user_id: int) -> Profile:
     return _profiles.setdefault(
         user_id,
         {
-            "name": None,
-            "company": None,
-            "industry": None,
-            "position": None,
-            "phone": None,
-            "greeted": False,
-            "saved_to_sheet": False,
-            "last_question": "",
+            "name": None, "company": None, "industry": None, "position": None, "phone": None,
+            "greeted": False, "saved_to_sheet": False, "last_question": "",
         },
     )
 
@@ -71,18 +63,6 @@ async def handle_event(
     phone: Optional[str] = None,
     system_event: Optional[str] = None,
 ) -> Tuple[str, bool, Optional[str]]:
-    """
-    Главный цикл:
-      1) Router читает вход (вопрос/данные/шаг).
-      2) Обновляем профиль слотов.
-      3) Responder генерит человекоподобный ответ.
-      4) Если регистрация завершена — однократно пишем в Google Sheets и возвращаем next_action='start_selection'.
-
-    Возвращает:
-      text: str                  — текст, который нужно отправить пользователю сейчас
-      ask_phone: bool           — показывать ли кнопку "Поделиться номером"
-      next_action: Optional[str]— например, "start_selection" чтобы роутер запустил подбор блогеров
-    """
     profile = get_profile(user_id)
 
     if user_text:
@@ -101,18 +81,15 @@ async def handle_event(
         stage=stage_before,
         user_text=user_text or "",
         system_event=system_event or "message",
-        model=None,
-        max_tokens=500,
     )
 
     slots = route.get("slots") or {}
     for k in ("name", "company", "industry", "position", "phone"):
         v = slots.get(k)
-        if v and not profile.get(k): # Применяем только если слот был пуст
+        if v and not profile.get(k):
             if k == "name":
                 v = v.split()[0].strip()
-                if v:
-                    v = v[0].upper() + v[1:]
+                if v: v = v[0].upper() + v[1:]
             profile[k] = v
 
     stage_target = route.get("stage_target") or _get_stage(profile)
@@ -125,10 +102,12 @@ async def handle_event(
         user_question=route.get("user_question"),
         last_assistant_question=profile.get("last_question") or "",
         first_turn=first_turn,
-        model_reg=None,
-        model_post=None,
-        max_tokens=600,
     )
+
+    # ИЗМЕНЕНИЕ: Добавляем проверку на None, чтобы избежать падения в будущем.
+    # Это "защита" на случай, если responder_reply по какой-то причине вернет None.
+    if reply is None:
+        reply = {"assistant_text": "Одну минуту, обрабатываю ваш запрос...", "ask_phone_button": False}
 
     text = (reply.get("assistant_text") or "").strip() or "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?"
     ask_phone = bool(reply.get("ask_phone_button"))
@@ -143,7 +122,8 @@ async def handle_event(
             if ok:
                 profile["saved_to_sheet"] = True
                 next_action = "start_selection"
-                if not text:
+                # Убедимся, что текст не пустой
+                if not text.strip():
                     text = "Спасибо за регистрацию! Перейдём к подбору инфлюенсеров."
             else:
                 profile["saved_to_sheet"] = False
