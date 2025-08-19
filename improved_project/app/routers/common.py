@@ -1,6 +1,7 @@
 # app/routers/common.py
 from __future__ import annotations
 
+import random
 from aiogram import Router, F
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import Message, CallbackQuery
@@ -21,18 +22,14 @@ GREETING = (
 )
 
 
-def _strict_mode_guard(message: Message) -> bool:
-    """
-    Возвращает True, если доступ запрещён в STRICT режиме (и уже отправлено предупреждение).
-    """
+async def _strict_mode_guard(message: Message) -> bool:
+    """Возвращает True, если доступ запрещён в STRICT режиме (и уже отправлено предупреждение)."""
     if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id):
-        # единое сообщение для всех случаев
         text = (
-            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер "
-            "(@A_bylaikhan)."
+            "🔒 Доступ по персональной ссылке. Пожалуйста, используйте URL, который вам отправил менеджер (@A_bylaikhan)."
         )
-        # ReplyKeyboard/InlineKeyboard здесь не нужны
-        return True if (message.answer(text) or True) else True  # безопасный one-liner
+        await message.answer(text)
+        return True
     return False
 
 
@@ -77,7 +74,13 @@ async def on_join(cb: CallbackQuery) -> None:
 
     # llm-менеджер теперь возвращает три значения
     text, ask_phone, next_action = await handle_event(user_id=user_id, system_event="joined")
-    text = sanitize_html(text or "").strip() or "Здравствуйте!"
+    text = sanitize_html(text or "").strip()
+    if not text:
+        text = random.choice([
+            "Здравствуйте! Рады познакомиться.",
+            "Привет! Очень рады вас видеть.",
+            "Рады знакомству!",
+        ])
 
     # ВАЖНО: edit_text поддерживает только InlineKeyboardMarkup/None.
     await cb.message.edit_text(text)
@@ -112,7 +115,13 @@ async def on_contact(message: Message) -> None:
         phone=phone,
         system_event="contact",
     )
-    text = sanitize_html(text or "").strip() or "Спасибо! Продолжим."
+    text = sanitize_html(text or "").strip()
+    if not text:
+        text = random.choice([
+            "Спасибо! Продолжим.",
+            "Благодарю, двигаемся дальше.",
+            "Отлично, идём дальше.",
+        ])
 
     # После контакта — убираем клавиатуру
     await message.answer(text, reply_markup=remove_kb())
@@ -137,7 +146,13 @@ async def any_text(message: Message) -> None:
         user_text=message.text,
         system_event="message",
     )
-    text = sanitize_html(text or "").strip() or "Продолжим."
+    text = sanitize_html(text or "").strip()
+    if not text:
+        text = random.choice([
+            "Продолжим.",
+            "Давайте продолжим.",
+            "Хорошо, идём дальше.",
+        ])
 
     if ask_phone:
         # Только ReplyKeyboard здесь

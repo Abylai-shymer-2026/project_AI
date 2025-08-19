@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from typing import Dict, List, Optional, Tuple, Any
 
 from openai import OpenAI
@@ -324,11 +325,22 @@ async def responder_reply(
         try:
             data = json.loads(raw)
         except Exception:
-            data = {"assistant_text": "Давайте продолжим. Поделитесь, пожалуйста, как называется ваш бизнес и чем вы занимаетесь?", "ask_phone_button": False}
+            data = {
+                "assistant_text": random.choice([
+                    "Давайте продолжим. Поделитесь, пожалуйста, как называется ваш бизнес и чем он занимается?",
+                    "Расскажите, как называется ваш бизнес и в какой сфере он работает?",
+                    "Чтобы двигаться дальше, подскажите название и направление вашего бизнеса.",
+                ]),
+                "ask_phone_button": False,
+            }
         data.setdefault("assistant_text", "")
         data.setdefault("ask_phone_button", False)
         if not str(data["assistant_text"]).strip():
-            data["assistant_text"] = "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?"
+            data["assistant_text"] = random.choice([
+                "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?",
+                "Давайте продолжим — расскажите, как называется ваша компания и что вы делаете?",
+                "Чтобы помочь, подскажите название и сферу деятельности вашего бизнеса.",
+            ])
         # ask_phone_button — только если шаг phone
         if next_step != "phone":
             data["ask_phone_button"] = False

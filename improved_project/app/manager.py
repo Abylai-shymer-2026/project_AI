@@ -1,6 +1,7 @@
 # app/manager.py
 from __future__ import annotations
 import time
+import random
 from typing import Dict, Optional, Tuple, List
 from . import llm, sheets
 import inspect
@@ -135,7 +136,13 @@ async def handle_event(
         max_tokens=600,
     )
 
-    text = (reply.get("assistant_text") or "").strip() or "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?"
+    text = (reply.get("assistant_text") or "").strip()
+    if not text:
+        text = random.choice([
+            "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?",
+            "Давайте продолжим — расскажите, как называется ваша компания и что вы делаете?",
+            "Чтобы помочь, подскажите название и сферу деятельности вашего бизнеса.",
+        ])
     ask_phone = bool(reply.get("ask_phone_button"))
 
     # обновим последний вопрос (последняя строка текста)
