@@ -71,3 +71,31 @@ def phone_request_kb() -> ReplyKeyboardMarkup:
 def remove_kb() -> ReplyKeyboardRemove:
     """Удаляет клавиатуру."""
     return ReplyKeyboardRemove()
+
+
+def results_nav_kb(page: int, total_pages: int, allow_select_done: bool = True) -> InlineKeyboardMarkup:
+    buttons = []
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"res:page:{page-1}"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"res:page:{page+1}"))
+    if nav_row:
+        buttons.append(nav_row)
+    if allow_select_done:
+        buttons.append([InlineKeyboardButton(text="✅ Готово", callback_data="res:done")])
+    buttons.append([
+        InlineKeyboardButton(text="🔄 Новый подбор", callback_data="res:new"),
+        InlineKeyboardButton(text="📤 Экспорт", callback_data="res:export"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def result_item_kb(usernames: List[str], selected: Optional[Set[str]] = None) -> InlineKeyboardMarkup:
+    if selected is None:
+        selected = set()
+    rows = []
+    for u in usernames:
+        mark = "✅" if u in selected else "☑️"
+        rows.append([InlineKeyboardButton(text=f"{mark} @{u}", callback_data=f"pick:{u}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

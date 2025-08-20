@@ -94,21 +94,28 @@ def append_user(profile: Dict[str, Optional[str]], tg_id: int) -> bool:
             ws = sh.worksheet("users")
         except WorksheetNotFound:
             _LOG.warning("Лист 'users' не найден, создаю новый.")
-            header = ["tg_id", "name", "company", "industry", "position", "phone", "created_at"]
+            # Выравниваем заголовки с диагностикой/инициализатором
+            header = [
+                "user_id", "tg_username", "full_name", "phone",
+                "company_name", "industry", "position", "created_at"
+            ]
             ws = sh.add_worksheet(title="users", rows=1000, cols=len(header))
             ws.append_row(header)
 
         tz = pytz.timezone("Asia/Almaty")
         created_at = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
+        # Пытаемся определить текущего пользователя из профиля (если доступно)
+        tg_username = (profile.get("tg_username") or "").strip()
+        full_name = (profile.get("name") or "").strip()
+        company_name = (profile.get("company") or "").strip()
+        industry = (profile.get("industry") or "").strip()
+        position = (profile.get("position") or "").strip()
+        phone = (profile.get("phone") or "").strip()
+
         row = [
-            str(tg_id),
-            (profile.get("name") or "").strip(),
-            (profile.get("company") or "").strip(),
-            (profile.get("industry") or "").strip(),
-            (profile.get("position") or "").strip(),
-            (profile.get("phone") or "").strip(),
-            created_at,
+            str(tg_id), tg_username, full_name, phone,
+            company_name, industry, position, created_at,
         ]
 
         ws.append_row(row, value_input_option="USER_ENTERED")
@@ -117,4 +124,59 @@ def append_user(profile: Dict[str, Optional[str]], tg_id: int) -> bool:
 
     except Exception as e:
         _LOG.exception("!!! КРИТИЧЕСКАЯ ОШИБКА при записи в Google Sheets: %s", e)
+        return False
+
+
+def _ensure_worksheet(sh: Spreadsheet, title: str, header: List[str]):
+    try:
+        ws = sh.worksheet(title)
+    except WorksheetNotFound:
+        ws = sh.add_worksheet(title=title, rows=1000, cols=max(10, len(header)))
+        ws.append_row(header)
+        return ws
+    # extend header if needed
+    existing = ws.row_values(1)
+    need_extend = False
+    new_header = list(existing)
+    for c in header:
+        if c not in new_header:
+            new_header.append(c)
+            need_extend = True
+    if need_extend:
+        ws.resize(rows=ws.row_count, cols=max(ws.col_count, len(new_header)))
+        ws.update('1:1', [new_header])
+    return ws
+
+
+def append_payment(user_id: int, tg_username: str | None, amount: int, currency: str, method: str, status: str, payload: str | None = None) -> bool:
+    try:
+        _LOG.info("Запись платежа в 'payments' для %s", user_id)
+        client = get_client()
+        sh = get_spreadsheet(client)
+        header = ["user_id", "tg_username", "amount", "currency", "method", "status", "payload", "paid_at"]
+        ws = _ensure_worksheet(sh, "payments", header)
+        tz = pytz.timezone("Asia/Almaty")
+        paid_at = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+        row = [str(user_id), (tg_username or ""), amount, currency, method, status, (payload or ""), paid_at]
+        ws.append_row(row, value_input_option="USER_ENTERED")
+        return True
+    except Exception:
+        _LOG.exception("Ошибка записи платежа")
+        return False
+
+
+def append_selection(user_id: int, tg_username: str | None, selected_usernames: List[str], export_format: str | None = None, export_url: str | None = None) -> bool:
+    try:
+        _LOG.info("Запись выбора в 'selections' для %s (%d шт.)", user_id, len(selected_usernames))
+        client = get_client()
+        sh = get_spreadsheet(client)
+        header = ["user_id", "tg_username", "selected_usernames", "export_format", "export_url", "selected_at"]
+        ws = _ensure_worksheet(sh, "selections", header)
+        tz = pytz.timezone("Asia/Almaty")
+        ts = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+        row = [str(user_id), (tg_username or ""), ", ".join(["@" + u.lstrip("@") for u in selected_usernames]), (export_format or ""), (export_url or ""), ts]
+        ws.append_row(row, value_input_option="USER_ENTERED")
+        return True
+    except Exception:
+        _LOG.exception("Ошибка записи выбора блогеров")
         return False

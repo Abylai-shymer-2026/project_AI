@@ -19,17 +19,17 @@ def _read_influencers_worksheet() -> pd.DataFrame:
     except gspread.WorksheetNotFound:
         header = [
             "name", "username", "profile_url", "city", "topics", "language", "followers",
-            "reach_stories", "reach_reels", "reach_poster", "price", "updated_at",
+            "reach_stories", "reach_reels", "reach_post", "price", "updated_at",
             "gender", "age", "marital_status", "children_count"
         ]
         ws = sh.add_worksheet(title="influencers", rows=1000, cols=len(header))
         ws.append_row(header)
     df = get_as_dataframe(ws, evaluate_formulas=True, header=0, dtype=str)
     df = df.dropna(how="all")
-    for col in ("followers", "reach_stories", "reach_reels", "reach_poster", "price", "age", "children_count"):
+    for col in ("followers", "reach_stories", "reach_reels", "reach_post", "price", "age", "children_count"):
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str).str.replace("\u202f", "").str.replace(" ", "")
-    for col in ("followers", "reach_stories", "reach_reels", "reach_poster", "price", "children_count"):
+    for col in ("followers", "reach_stories", "reach_reels", "reach_post", "price", "children_count"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in ("city", "topics", "language", "gender", "marital_status"):

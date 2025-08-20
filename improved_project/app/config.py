@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # --- Bot behavior ---
     MAX_HISTORY_TURNS: int = 6
 
+    # --- Payments ---
+    PAYMENT_MODE: str = "mock"  # mock | live
+    PAYMENT_PROVIDER_TOKEN: str | None = None
+    PAYMENT_CURRENCY: str = "KZT"
+    PAYMENT_PRICE: int = 9900
+
+    # --- Results ---
+    RESULTS_PER_PAGE: int = 4
+
     # Новая переменная для АБСОЛЮТНОГО пути
     # Она не читается из .env, а вычисляется здесь
     CREDENTIALS_FILE_ABSPATH: Path | None = None

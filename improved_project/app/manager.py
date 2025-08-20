@@ -39,20 +39,31 @@ async def handle_event(
 
 
     elif user_text and step:
-        is_text_for_phone_step = (step == "phone" and user_text is not None)
-        if is_text_for_phone_step:
-            import re
-            digits = re.sub(r"\D+", "", user_text)
+        # Попробуем ИИ-роутер для автозаполнения слотов и выявления вопросов
+        try:
+            routed = await route_user_message_registration(user_text=user_text, current_step=step)
+        except Exception:
+            routed = None
 
-            if digits:
-                await state_obj.update_data(phone=digits)
-                user_question = None
-
+        if routed and isinstance(routed, dict):
+            slots = routed.get("slots") or {}
+            updates = {k: v for k, v in slots.items() if k in REG_FIELDS and v}
+            if updates:
+                await state_obj.update_data(**updates)
+            user_question = routed.get("user_question") or None
+        else:
+            # Фолбэк: прежняя логика для телефона
+            is_text_for_phone_step = (step == "phone")
+            if is_text_for_phone_step:
+                import re
+                digits = re.sub(r"\D+", "", user_text)
+                if digits:
+                    await state_obj.update_data(phone=digits)
+                    user_question = None
+                else:
+                    user_question = user_text
             else:
                 user_question = user_text
-
-        else:
-            user_question = user_text
 
         step = await _current_step(state_obj)
 
