@@ -1,149 +1,100 @@
 # app/manager.py
 from __future__ import annotations
-import time
-import random
-from typing import Dict, Optional, Tuple, List
-from . import llm, sheets
-import inspect
+import asyncio
+import logging
+from typing import Dict, Optional, Tuple
+
+from aiogram.fsm.context import FSMContext
+
+from . import sheets
+from .ai_logic import route_user_message_registration, generate_assistant_response_registration
+
+log = logging.getLogger(__name__)
 
 Profile = Dict[str, Optional[str]]
-
-_profiles: Dict[int, Profile] = {}
-_history: Dict[int, List[Dict[str, str]]] = {}  # [{role, content, ts}]
-MEM_LIMIT = 30
-MEM_TTL = 7 * 24 * 3600  # 7 дней
+REG_FIELDS = ("name", "company", "industry", "position", "phone")
 
 
-def _get_stage(profile: Profile) -> str:
-    """registration | postreg"""
-    need = [k for k in ("name", "company", "industry", "position", "phone") if not profile.get(k)]
-    return "registration" if need else "postreg"
-
-
-def _current_step(profile: Profile) -> Optional[str]:
-    if not profile.get("name"):
-        return "name"
-    if not profile.get("company"):
-        return "company"
-    if not profile.get("industry"):
-        return "industry"
-    if not profile.get("position"):
-        return "position"
-    if not profile.get("phone"):
-        return "phone"
+async def _current_step(state: FSMContext) -> Optional[str]:
+    """Определяет текущий шаг регистрации, проверяя данные в FSM."""
+    user_data = await state.get_data()
+    for field in REG_FIELDS:
+        if field not in user_data:
+            return field
     return None
 
 
-def get_profile(user_id: int) -> Profile:
-    return _profiles.setdefault(
-        user_id,
-        {
-            "name": None, "company": None, "industry": None, "position": None, "phone": None,
-            "greeted": False, "saved_to_sheet": False, "last_question": "",
-        },
-    )
-
-
-def _hist_add(user_id: int, role: str, content: str) -> None:
-    now = int(time.time())
-    arr = _history.setdefault(user_id, [])
-    arr.append({"role": role, "content": (content or ""), "ts": now})
-    cutoff = now - MEM_TTL
-    arr[:] = [m for m in arr if m.get("ts", now) >= cutoff]
-    if len(arr) > MEM_LIMIT:
-        del arr[:-MEM_LIMIT]
-
-
-def _hist_for_llm(user_id: int) -> List[Dict[str, str]]:
-    return [{"role": m["role"], "content": m["content"]} for m in _history.get(user_id, [])[-MEM_LIMIT:]]
-
-
 async def handle_event(
-    user_id: int,
-    user_text: Optional[str] = None,
-    phone: Optional[str] = None,
-    system_event: Optional[str] = None,
+        user_id: int,
+        state_obj: FSMContext,
+        user_text: Optional[str] = None,
+        contact_phone: Optional[str] = None
 ) -> Tuple[str, bool, Optional[str]]:
-    profile = get_profile(user_id)
+    step = await _current_step(state_obj)
+    user_question = None
 
-    if user_text:
-        _hist_add(user_id, "user", user_text)
-    if phone and not profile.get("phone"):
-        profile["phone"] = phone
+    if contact_phone:
+        await state_obj.update_data(phone=contact_phone)
+        step = await _current_step(state_obj)
 
-    first_turn = not profile.get("greeted")
-    if first_turn:
-        profile["greeted"] = True
 
-    stage_before = _get_stage(profile)
+    elif user_text and step:
+        is_text_for_phone_step = (step == "phone" and user_text is not None)
+        if is_text_for_phone_step:
+            import re
+            digits = re.sub(r"\D+", "", user_text)
 
-    route = await llm.router_decide(
-        state={k: profile.get(k) for k in ("name", "company", "industry", "position", "phone")},
-        stage=stage_before,
-        user_text=user_text or "",
-        system_event=system_event or "message",
-    )
+            if digits:
+                await state_obj.update_data(phone=digits)
+                user_question = None
 
-    slots = route.get("slots") or {}
-    for k in ("name", "company", "industry", "position", "phone"):
-        v = slots.get(k)
-        if v and not profile.get(k):
-            if k == "name":
-                v = v.split()[0].strip()
-                if v: v = v[0].upper() + v[1:]
-            profile[k] = v
-
-    stage_target = route.get("stage_target") or _get_stage(profile)
-    next_step = _current_step(profile) or "done"
-
-    reply = await llm.responder_reply(
-        stage=stage_target,
-        state={k: profile.get(k) for k in ("name", "company", "industry", "position", "phone")},
-        next_step=next_step,
-        user_question=route.get("user_question"),
-        last_assistant_question=profile.get("last_question") or "",
-        first_turn=first_turn,
-    )
-
-<<<<<<< HEAD
-    # ИЗМЕНЕНИЕ: Добавляем проверку на None, чтобы избежать падения в будущем.
-    # Это "защита" на случай, если responder_reply по какой-то причине вернет None.
-    if reply is None:
-        reply = {"assistant_text": "Одну минуту, обрабатываю ваш запрос...", "ask_phone_button": False}
-
-    text = (reply.get("assistant_text") or "").strip() or "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?"
-=======
-    text = (reply.get("assistant_text") or "").strip()
-    if not text:
-        text = random.choice([
-            "Продолжим. Как называется ваш бизнес и чем вы занимаетесь?",
-            "Давайте продолжим — расскажите, как называется ваша компания и что вы делаете?",
-            "Чтобы помочь, подскажите название и сферу деятельности вашего бизнеса.",
-        ])
->>>>>>> 0359b6f572d788f487eb5e81e33438d0b40cc075
-    ask_phone = bool(reply.get("ask_phone_button"))
-
-    profile["last_question"] = text.strip().split("\n")[-1].strip()
-
-    next_action: Optional[str] = None
-    if _current_step(profile) is None and not profile.get("saved_to_sheet"):
-        try:
-            res = sheets.append_user(profile, tg_id=user_id)
-            ok = await res if inspect.isawaitable(res) else bool(res)
-            if ok:
-                profile["saved_to_sheet"] = True
-                next_action = "start_selection"
-                # Убедимся, что текст не пустой
-                if not text.strip():
-                    text = "Спасибо за регистрацию! Перейдём к подбору инфлюенсеров."
             else:
-                profile["saved_to_sheet"] = False
-        except Exception:
-            profile["saved_to_sheet"] = False
+                user_question = user_text
 
-    _hist_add(user_id, "assistant", text)
+        else:
+            user_question = user_text
 
-    if next_step != "phone":
-        ask_phone = False
+        step = await _current_step(state_obj)
 
-    return text, ask_phone, next_action
+    user_data = await state_obj.get_data()
+
+    if not step:
+        log.debug("Все поля регистрации заполнены. Проверяем сохранение в Google Sheets.")
+        if not user_data.get("saved_to_sheet"):
+            await state_obj.bot.send_message(user_id, "Спасибо за регистрацию! ✨ Одну минуту, сохраняю ваш профиль...")
+
+            # --- ДИАГНОСТИЧЕСКОЕ ЛОГИРОВАНИЕ ---
+            log.info(f"Попытка записи в Google Sheets для tg_id={user_id}. Данные: {user_data}")
+            ok = False # Изначально считаем, что запись не удалась
+            try:
+                # Запускаем синхронную функцию в отдельном потоке
+                ok = await asyncio.to_thread(sheets.append_user, user_data, tg_id=user_id)
+            except Exception as e:
+                log.critical(f"Критическая ошибка ПРИ ВЫЗОВЕ asyncio.to_thread для sheets.append_user: {e}", exc_info=True)
+
+
+            if ok:
+                log.info(f"ЗАПИСЬ УСПЕШНА для tg_id={user_id}.")
+                await state_obj.update_data(saved_to_sheet=True)
+                # Важно: возвращаем пустую строку, чтобы бот ничего не писал после "сохраняю ваш профиль"
+                return "", False, "start_selection"
+            else:
+                # Если ok == False, значит, была ошибка внутри sheets.append_user
+                log.error(f"ЗАПИСЬ НЕ УДАЛАСЬ для tg_id={user_id}. Функция sheets.append_user вернула False.")
+                return "К сожалению, произошла ошибка при сохранении вашего профиля. Пожалуйста, попробуйте связаться с менеджером.", False, None
+        else:
+            # Пользователь уже сохранен, просто переходим дальше
+            log.info(f"Пользователь tg_id={user_id} уже был сохранен. Переход к выбору.")
+            return "", False, "start_selection"
+
+    assistant_text = await generate_assistant_response_registration(
+        state=user_data,
+        next_step=step,
+        user_question=user_question,
+        last_assistant_question=user_data.get("last_question")
+    )
+
+    await state_obj.update_data(last_question=assistant_text)
+    ask_phone = (step == "phone")
+
+    return assistant_text, ask_phone, None

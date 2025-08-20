@@ -5,3 +5,7 @@ python-dotenv>=1.0
 openai>=1.30
 gspread==6.1.2
 google-auth==2.31.0
+pytz>=2024.1
+reportlab>=4.0.0
+gspread-dataframe>=3.3.1
+xlsxwriter>=3.2.0

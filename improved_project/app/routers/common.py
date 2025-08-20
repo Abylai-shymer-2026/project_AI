@@ -2,93 +2,63 @@
 from __future__ import annotations
 
 from aiogram import Router, F
-from aiogram.filters import CommandStart, CommandObject
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
 
 from ..config import settings
 from ..token_store import tokens
-from ..keyboards import join_kb, phone_request_kb, remove_kb
-from ..formatting import sanitize_html
+from ..keyboards import remove_kb
+from ..formatting import sanitize_html, ensure_min_words
 from ..manager import handle_event
-from ..routers.influencers import start_selection
 
+# Создаём реальный Router здесь, без самоссылочного импорта
 router = Router(name="common")
 
 
-@router.message(CommandStart(deep_link=True))
-async def start_with_payload(message: Message, command: CommandObject) -> None:
-    user_id = message.from_user.id
-    payload = (command.args or "").strip()
-    token = payload.replace("invite_", "").strip()
-
-    if settings.START_MODE.lower() == "strict":
-        if tokens.consume(token, user_id):
-            await message.answer("Для начала работы, пожалуйста, пройдите короткую регистрацию.",
-                                 reply_markup=join_kb())
-            return
-        await message.answer(f"🔒 Доступ по персональной ссылке. Обратитесь к менеджеру ({settings.MANAGER_CONTACT}).")
-        return
-
-    tokens.grant_for_dev(user_id)
-    await message.answer("Для начала работы, пожалуйста, пройдите короткую регистрацию.", reply_markup=join_kb())
-
-
-@router.message(CommandStart())
-async def start_plain(message: Message) -> None:
-    if settings.START_MODE.lower() == "strict":
-        await message.answer(f"🔒 Доступ по персональной ссылке. Обратитесь к менеджеру ({settings.MANAGER_CONTACT}).")
-        return
-    tokens.grant_for_dev(message.from_user.id)
-    await message.answer("Для начала работы, пожалуйста, пройдите короткую регистрацию.", reply_markup=join_kb())
-
-
-@router.callback_query(F.data == "join")
-async def on_join(cb: CallbackQuery) -> None:
-    user_id = cb.from_user.id
-    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(user_id):
-        await cb.answer("Требуется персональная ссылка.", show_alert=True)
-        return
-
-    text, ask_phone, next_action = await handle_event(user_id=user_id, system_event="joined")
-    text = sanitize_html(text or "Здравствуйте! Давайте начнем.")
-
-    await cb.message.edit_text(text)
-
-    if ask_phone:
-        await cb.message.answer("Можно отправить номер контакта одной кнопкой.", reply_markup=phone_request_kb())
-
-    if next_action == "start_selection":
-        await start_selection(cb.message)
-    await cb.answer()
-
-
-@router.message(F.contact)
-async def on_contact(message: Message) -> None:
-    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id): return
-
-    text, _, next_action = await handle_event(
-        user_id=message.from_user.id,
-        phone=message.contact.phone_number,
-        system_event="contact",
-    )
-    text = sanitize_html(text or "Спасибо! Продолжим.")
-    await message.answer(text, reply_markup=remove_kb())
-
-    if next_action == "start_selection":
-        await start_selection(message)
+async def _start_selection_lazy(message: Message, state: FSMContext):
+    # Ленивый импорт, чтобы исключить любые циклы импорта между routers/*.py
+    from .influencers import start_selection
+    await start_selection(message, state)
 
 
 @router.message(F.text)
-async def any_text(message: Message) -> None:
-    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id): return
+async def on_user_text(message: Message, state: FSMContext):
+    # strict: работаем только с авторизованными по URL
+    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id):
+        return
 
     text, ask_phone, next_action = await handle_event(
-        user_id=message.from_user.id, user_text=message.text
+        user_id=message.from_user.id,
+        user_text=(message.text or "").strip(),
+        state_obj=state,
     )
-    text = sanitize_html(text or "Продолжим.")
 
-    reply_markup = phone_request_kb() if ask_phone else None
-    await message.answer(text, reply_markup=reply_markup)
+    if text:
+        await message.answer(ensure_min_words(sanitize_html(text)))
 
     if next_action == "start_selection":
-        await start_selection(message)
+        await _start_selection_lazy(message, state)
+
+
+@router.message(F.contact)
+async def on_contact(message: Message, state: FSMContext):
+    if settings.START_MODE.lower() == "strict" and not tokens.is_authorized(message.from_user.id):
+        return
+
+    phone = message.contact.phone_number if message.contact else None
+    if not phone:
+        await message.answer("Не удалось прочитать номер. Можете отправить его текстом?")
+        return
+
+    text, ask_phone, next_action = await handle_event(
+        user_id=message.from_user.id,
+        user_text=None,
+        contact_phone=phone,
+        state_obj=state,
+    )
+
+    if text:
+        await message.answer(ensure_min_words(sanitize_html(text)), reply_markup=remove_kb())
+
+    if next_action == "start_selection":
+        await _start_selection_lazy(message, state)

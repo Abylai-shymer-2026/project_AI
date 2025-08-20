@@ -1,3 +1,4 @@
+# app/token_store.py
 from typing import Optional, Dict, Set
 from .config import settings
 
@@ -14,15 +15,12 @@ class TokenStore:
     def is_authorized(self, user_id: int) -> bool:
         return user_id in self._by_user
 
-    def consume(self, token: str, user_id: int) -> bool:
+    def consume(self, user_id: int, token: str) -> bool:
         token = (token or "").strip()
         if not token:
             return False
-        if token in self._consumed:
-            return False
         if token not in self._active:
             return False
-        # mark as used (single-use). For multi-use, remove the next line.
         self._active.remove(token)
         self._consumed.add(token)
         self._by_user[user_id] = token

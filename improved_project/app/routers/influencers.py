@@ -1,238 +1,224 @@
 # app/routers/influencers.py
 from __future__ import annotations
-import io
-from typing import Dict
-import pandas as pd
 from aiogram import Router, F
-from aiogram.enums import ChatAction
-from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
-                           InlineKeyboardButton, BufferedInputFile)
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from typing import Set, List, Optional
+import re
 
-from .. import llm
-# Убедитесь, что в вашем файле app/influencers.py есть эти функции
-from ..influencers import (
-    list_cities, query_influencers, paginate, list_topics,
-    export_excel, export_pdf
-)
+from ..states import SelectionBasicStates, SelectionDecisionStates
+from ..keyboards import paginated_multiselect_kb
+from ..influencers import list_cities, list_topics
+from ..formatting import ensure_min_words
 
-router = Router(name="influencers")
+router = Router(name="influencer_selection")
 
-# --- Управление состоянием подбора в памяти ---
-_user_states: Dict[int, Dict] = {}
+CITIES_LIMIT = 25
+TOPICS_LIMIT = 10
 
+# ===== helpers =====
 
-def get_user_state(user_id: int) -> Dict:
-    """Получает или создает состояние для пользователя."""
-    if user_id not in _user_states:
-        _user_states[user_id] = {
-            "filters": {},
-            "page": 1,
-            "advanced_choice_made": False,
-            "advanced_mode": False
-        }
-    return _user_states[user_id]
+def _infer_gender_from_text(text: str) -> Optional[str]:
+    t = text.lower()
+    if any(w in t for w in ["жен", "девушка", "она"]):
+        return "ж"
+    if any(w in t for w in ["муж", "парень", "он"]):
+        return "м"
+    return None
 
+def _age_is_ambiguous(text: str) -> bool:
+    # «24» — неясно: ровно/до/от/диапазон
+    return bool(re.fullmatch(r"\d{1,2}", text.strip()))
 
-def get_next_step(state: Dict) -> str:
-    """Определяет следующий шаг сценария на основе заполненных фильтров."""
-    filters = state["filters"]
-    # Используем .get() для безопасного доступа
-    if not filters.get("cities"): return "city"
-    if not filters.get("topics"): return "topic"
-    if not filters.get("age_range"): return "age"
-    if not filters.get("gender"): return "gender"
-    if not filters.get("language"): return "language"
-    if not state.get("advanced_choice_made"): return "advanced_or_results"
-    if state.get("advanced_mode"):
-        if not filters.get("followers_range"): return "followers"
-        if not filters.get("price_range"): return "budget"  # 'budget' соответствует 'price_range'
-        if not filters.get("service"): return "service"
-    return "done"
+def _ask_age_clarify(msg: Message):
+    kb = paginated_multiselect_kb(
+        items=["Ровно", "До", "От", "Диапазон 20–24"],
+        callback_prefix="ageclar",
+        items_per_page=20,
+        always_show_done=False,
+    )
+    return msg.answer(
+        ensure_min_words("Вы указали «24». Уточните: ровно 24, до 24, от 24, или диапазон 20–24?"),
+        reply_markup=kb
+    )
 
+# ===== entrypoint =====
 
-# --- Клавиатуры ---
+async def start_selection(message: Message, state: FSMContext):
+    # города (обязательный мультивыбор)
+    await state.set_state(SelectionBasicStates.cities)
+    cities = list_cities(limit=CITIES_LIMIT)
+    await state.update_data(sel_cities=set(), cities_page=0)
+    await message.answer(
+        ensure_min_words("Супер! Начнём с городов. Можно выбрать несколько — галочка появится рядом."),
+        reply_markup=paginated_multiselect_kb(
+            cities, "city", selected_items=set(), page=0, items_per_page=10, show_skip=False, always_show_done=True
+        ),
+    )
 
-def city_buttons() -> InlineKeyboardMarkup:
-    cities = list_cities()[:12]
-    buttons = [InlineKeyboardButton(text=c, callback_data=f"select:{c}") for c in cities]
-    return InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 3] for i in range(0, len(buttons), 3)])
+# ===== cities =====
 
+@router.callback_query(SelectionBasicStates.cities, F.data.startswith("city:"))
+async def on_city(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected: Set[str] = set(data.get("sel_cities") or [])
+    page = int(data.get("cities_page") or 0)
+    cities = list_cities(limit=CITIES_LIMIT)
 
-def topic_buttons() -> InlineKeyboardMarkup:
-    # Убедитесь, что функция list_topics() существует в app/influencers.py
-    topics = list_topics()[:8]
-    buttons = [InlineKeyboardButton(text=t, callback_data=f"select:{t}") for t in topics]
-    return InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 2] for i in range(0, len(buttons), 2)])
-
-
-def gender_buttons() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Мужской 👨", callback_data="select:Мужской"),
-         InlineKeyboardButton(text="Женский 👩", callback_data="select:Женский")],
-        [InlineKeyboardButton(text="Пропустить ➡️", callback_data="select:пропустить")]])
-
-
-def language_buttons() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Казахский", callback_data="select:Казахский"),
-         InlineKeyboardButton(text="Русский", callback_data="select:Русский")],
-        [InlineKeyboardButton(text="Двуязычный", callback_data="select:Двуязычный"),
-         InlineKeyboardButton(text="Пропустить ➡️", callback_data="select:пропустить")]])
-
-
-def advanced_or_results_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Получить результат", callback_data="select:get_results")],
-        [InlineKeyboardButton(text="🔍 Продвинутый поиск", callback_data="select:advanced_search")]])
-
-
-def results_keyboard(page: int, max_pages: int) -> InlineKeyboardMarkup:
-    buttons = []
-    nav = []
-    if page > 1:
-        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page:{page - 1}"))
-    if page < max_pages:
-        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"page:{page + 1}"))
-    if nav:
-        buttons.append(nav)
-    buttons.append([
-        InlineKeyboardButton(text="📄 Экспорт PDF", callback_data="export:pdf"),
-        InlineKeyboardButton(text="📊 Экспорт Excel", callback_data="export:xlsx"),
-    ])
-    buttons.append([InlineKeyboardButton(text="🔄 Новый подбор", callback_data="new_search")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-# --- Главный цикл обработки ---
-
-async def process_selection_step(message: Message, user_input: str | None, event: str):
-    state = get_user_state(message.from_user.id)
-    step_before = get_next_step(state)
-
-    # Обновляем состояние на основе ввода пользователя
-    if step_before == "advanced_or_results" and user_input in ["get_results", "advanced_search"]:
-        state["advanced_choice_made"] = True
-        state["advanced_mode"] = (user_input == "advanced_search")
-    elif user_input:
-        # Пропускаемые шаги
-        if user_input.lower() in ["пропустить", "любой", "skip"] and step_before in ["age", "gender", "language",
-                                                                                     "followers", "budget", "service"]:
-            state["filters"][
-                step_before + "_range" if "age" in step_before or "follower" in step_before else step_before] = "skipped"
+    _, action, value = cb.data.split(":", 2)
+    if action == "pick":
+        if value in selected:
+            selected.remove(value)
         else:
-            route = await llm.postreg_router_decide(
-                filters=state["filters"], user_text=user_input, user_event=event,
-                pending_step=step_before, cities_from_db=list_cities())
-            for key, value in (route.get("updates") or {}).items():
-                if value: state["filters"][key] = value
-
-    step_after = get_next_step(state)
-
-    # Генерируем ответ ИИ
-    if step_after == "done":
-        await message.answer("Отлично, все критерии заданы! Готовлю для вас список... 🕵️‍♀️")
-        await show_results(message, state)
-        return
-
-    resp = await llm.postreg_responder_reply(
-        state={"filters": state["filters"], "pending_step": step_after}, user_question=None)
-
-    kb_map = {
-        "city": city_buttons(), "topic": topic_buttons(), "gender": gender_buttons(),
-        "language": language_buttons(), "advanced_or_results": advanced_or_results_keyboard()
-    }
-    await message.answer(resp.get("assistant_text", "Продолжим..."), reply_markup=kb_map.get(step_after))
-
-
-# --- Обработчики Aiogram ---
-
-async def start_selection(message: Message):
-    _user_states.pop(message.from_user.id, None)
-    await process_selection_step(message, user_input=None, event="start")
-
-
-@router.message(F.text)
-async def on_text_message(message: Message):
-    if message.from_user.id in _user_states:
-        await process_selection_step(message, user_input=message.text, event="message")
-
-
-@router.callback_query(F.data.startswith("select:"))
-async def on_button_click(cb: CallbackQuery):
-    if cb.from_user.id in _user_states:
-        user_choice = cb.data.split(":", 1)[1]
-        await cb.message.edit_text(f"<i>Ваш выбор: {user_choice}</i>")
-        await process_selection_step(cb.message, user_input=user_choice, event="button")
-    await cb.answer()
-
-
-@router.callback_query(F.data == "new_search")
-async def on_new_search(cb: CallbackQuery):
-    await cb.message.delete()
-    await start_selection(cb.message)
-    await cb.answer()
-
-
-async def show_results(message: Message, state: Dict, edit: bool = False):
-    filters_to_query = {k: v for k, v in state.get("filters", {}).items() if v != "skipped"}
-    df = query_influencers(**filters_to_query)
-
-    if df.empty:
-        await message.answer("К сожалению, по вашим фильтрам никого не найдено. 😕", reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔄 Новый подбор", callback_data="new_search")]]))
-        return
-
-    page = state.get("page", 1)
-    chunk, max_pages = paginate(df, page, 5)
-
-    lines = []
-    for _, r in chunk.iterrows():
-        followers = f'{int(r["followers"]):,}'.replace(',', ' ') if pd.notnull(r.get("followers")) else "-"
-        lines.append(
-            f"👤 <b>{r.get('name', '')}</b> (@{r.get('username', '')}) - {r.get('city', '')}\n"
-            f"<b>Темы:</b> {r.get('topics', '')}\n"
-            f"<b>Подписчики:</b> {followers} | <b>Язык:</b> {r.get('language', '-')}"
+            selected.add(value)
+        await state.update_data(sel_cities=selected)
+    elif action == "page":
+        page = max(0, int(value))
+        await state.update_data(cities_page=page)
+    elif action == "done":
+        if not selected:
+            await cb.answer("Нужно выбрать хотя бы один город", show_alert=True)
+        else:
+            # Переходим к тематикам
+            await state.set_state(SelectionBasicStates.topics)
+            await state.update_data(sel_topics=set(), topics_page=0)
+            topics = list_topics(limit=TOPICS_LIMIT)
+            await cb.message.edit_text(
+                ensure_min_words("Отличный выбор городов! Теперь тематики — тоже можно несколько."),
+                reply_markup=paginated_multiselect_kb(
+                    topics, "topic", selected_items=set(), page=0, items_per_page=10, show_skip=False, always_show_done=True
+                ),
+            )
+            await cb.answer()
+            return
+    # re-render
+    await cb.message.edit_reply_markup(
+        reply_markup=paginated_multiselect_kb(
+            cities, "city", selected_items=selected, page=page, items_per_page=10, show_skip=False, always_show_done=True
         )
-
-    text = "Вот кто нашёлся по вашим критериям:\n\n" + "\n\n".join(lines) + f"\n\n<i>Страница {page} из {max_pages}</i>"
-
-    if edit:
-        await message.edit_text(text, reply_markup=results_keyboard(page, max_pages))
-    else:
-        await message.answer(text, reply_markup=results_keyboard(page, max_pages))
-
-
-@router.callback_query(F.data.startswith("page:"))
-async def on_page_switch(cb: CallbackQuery):
-    state = get_user_state(cb.from_user.id)
-    state["page"] = int(cb.data.split(":")[1])
-    await show_results(cb.message, state, edit=True)
+    )
     await cb.answer()
 
+# ===== topics =====
 
-@router.callback_query(F.data.startswith("export:"))
-async def on_export(cb: CallbackQuery):
-    await cb.answer("Готовлю файл...")
-    state = get_user_state(cb.from_user.id)
-    filters_to_query = {k: v for k, v in state.get("filters", {}).items() if v != "skipped"}
-    df = query_influencers(**filters_to_query)
+@router.callback_query(SelectionBasicStates.topics, F.data.startswith("topic:"))
+async def on_topic(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected: Set[str] = set(data.get("sel_topics") or [])
+    page = int(data.get("topics_page") or 0)
+    topics = list_topics(limit=TOPICS_LIMIT)
 
-    if df.empty:
-        await cb.message.answer("Нет данных для экспорта.")
-        return
+    _, action, value = cb.data.split(":", 2)
+    if action == "pick":
+        if value in selected:
+            selected.remove(value)
+        else:
+            selected.add(value)
+        await state.update_data(sel_topics=selected)
+    elif action == "page":
+        page = max(0, int(value))
+        await state.update_data(topics_page=page)
+    elif action == "done":
+        if not selected:
+            await cb.answer("Нужно выбрать хотя бы одну тематику", show_alert=True)
+        else:
+            # Переходим к возрасту (optional)
+            await state.set_state(SelectionBasicStates.age)
+            await cb.message.edit_text(
+                ensure_min_words("Какой возраст блогеров предпочтителен? Можно написать диапазон (например, 20-24) или оставить пустым."),
+                reply_markup=None
+            )
+            await cb.answer()
+            return
 
-    if cb.data.endswith("pdf"):
-        # Логика для PDF
-        pdf_bytes = io.BytesIO()
-        # Тут должна быть ваша реализация export_pdf, пишущая в BytesIO
-        # export_pdf(df, pdf_bytes)
-        # pdf_bytes.seek(0)
-        # await cb.message.answer_document(BufferedInputFile(pdf_bytes, "influencers.pdf"))
-        await cb.message.answer("Экспорт в PDF пока в разработке.")
+    await cb.message.edit_reply_markup(
+        reply_markup=paginated_multiselect_kb(
+            topics, "topic", selected_items=selected, page=page, items_per_page=10, show_skip=False, always_show_done=True
+        )
+    )
+    await cb.answer()
 
-    else:  # Excel
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Influencers')
-        output.seek(0)
-        await cb.message.answer_document(BufferedInputFile(output, "influencers.xlsx"))
+# ===== age (optional, с уточнением «24») =====
+
+@router.message(SelectionBasicStates.age, F.text)
+async def on_age_text(msg: Message, state: FSMContext):
+    text = (msg.text or "").strip()
+    if not text:
+        await state.update_data(age_text=None)
+    else:
+        if _age_is_ambiguous(text):
+            await state.update_data(pending_age=text)
+            await _ask_age_clarify(msg)
+            return
+        await state.update_data(age_text=text)
+
+    # Переходим к языку
+    await state.set_state(SelectionBasicStates.language)
+    kb = paginated_multiselect_kb(
+        items=["Казахский", "Русский", "Двуязычный", "Пропустить"],
+        callback_prefix="lang",
+        items_per_page=4,
+        always_show_done=False
+    )
+    await msg.answer(ensure_min_words("Какой язык контента желателен? Выберите один вариант или «Пропустить»."), reply_markup=kb)
+
+@router.callback_query(F.data.startswith("ageclar:"))
+async def on_age_clarify(cb: CallbackQuery, state: FSMContext):
+    choice = cb.data.split(":", 2)[2]
+    base = (await state.get_data()).get("pending_age") or "24"
+    mapping = {
+        "Ровно": base,
+        "До": f"<= {base}",
+        "От": f">= {base}",
+        "Диапазон 20–24": "20-24",
+    }
+    await state.update_data(age_text=mapping.get(choice, base), pending_age=None)
+    await cb.message.edit_reply_markup(None)
+    # дальше спросим язык
+    await state.set_state(SelectionBasicStates.language)
+    kb = paginated_multiselect_kb(
+        items=["Казахский", "Русский", "Двуязычный", "Пропустить"],
+        callback_prefix="lang",
+        items_per_page=4,
+        always_show_done=False
+    )
+    await cb.message.answer(ensure_min_words("Понял возраст. Теперь язык контента?"), reply_markup=kb)
+    await cb.answer()
+
+# ===== language (buttons) =====
+
+@router.callback_query(SelectionBasicStates.language, F.data.startswith("lang:"))
+async def on_language(cb: CallbackQuery, state: FSMContext):
+    choice = cb.data.split(":", 2)[2]
+    language = None if choice == "Пропустить" else choice
+    await state.update_data(language=language)
+
+    # Пол попытаемся определить из текста пользователя дальше, но сейчас спрашивать не будем.
+    await state.update_data(gender=None)
+    # Переходим к решению: Advanced / Показать результат
+    await state.set_state(SelectionDecisionStates.decide)
+    kb = paginated_multiselect_kb(
+        items=["Advanced", "Показать результат"],
+        callback_prefix="decide",
+        items_per_page=2,
+        always_show_done=False
+    )
+    await cb.message.edit_text(
+        ensure_min_words("Хочешь добавить точные фильтры (семейное положение, подписчики, форматы, бюджет) или сразу показать результат?"),
+        reply_markup=kb
+    )
+    await cb.answer()
+
+# ===== decision =====
+
+@router.callback_query(SelectionDecisionStates.decide, F.data.startswith("decide:"))
+async def on_decide(cb: CallbackQuery, state: FSMContext):
+    action = cb.data.split(":", 2)[2]
+    if action == "Advanced":
+        # дальше подключим расширенные фильтры на следующем шаге
+        await cb.message.edit_text("Окей, включаю расширенные фильтры…")
+        # TODO: set_state(...) для advanced
+    else:
+        # Здесь пока просто завершим базовый этап — на следующем шаге подключим оплату и выдачу.
+        await cb.message.edit_text("Принято. На следующем шаге подключу оплату и покажу результаты.")
+    await cb.answer()

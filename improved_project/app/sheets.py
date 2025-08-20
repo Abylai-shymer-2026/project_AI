@@ -1,84 +1,120 @@
 # app/sheets.py
 from __future__ import annotations
-import os, json
-from typing import Optional, List, Dict, Any
+import json
+import logging
 from datetime import datetime
-import pytz  # Библиотека для работы с часовыми поясами
+from typing import Dict, List, Optional
 
-import pandas as pd
 import gspread
+import pytz
+from gspread.exceptions import APIError, WorksheetNotFound, SpreadsheetNotFound
+from gspread import Spreadsheet
 from google.oauth2.service_account import Credentials
 
-# ... (код для аутентификации остается без изменений) ...
+from .config import settings
 
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
+_LOG = logging.getLogger(__name__)
+
+_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 _client: Optional[gspread.Client] = None
-_spreadsheet: Optional[gspread.Spreadsheet] = None
 
-def _build_credentials() -> Credentials:
-    sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+def _get_credentials() -> Credentials:
+    _LOG.debug("Попытка создания учетных данных Google...")
+    sa_json = settings.GOOGLE_SHEETS_CREDENTIALS_JSON
+
+    # ИСПОЛЬЗУЕМ НОВУЮ ПЕРЕМЕННУЮ С АБСОЛЮТНЫМ ПУТЕМ
+    sa_file_path = settings.CREDENTIALS_FILE_ABSPATH
+
     if sa_json:
-        info = json.loads(sa_json)
-        return Credentials.from_service_account_info(info, scopes=_SCOPES)
-    if sa_file:
-        return Credentials.from_service_account_file(sa_file, scopes=_SCOPES)
-    raise RuntimeError("Google Sheets creds not provided.")
+        try:
+            # ... (логика для JSON остается без изменений)
+            if sa_json.startswith("'") and sa_json.endswith("'"):
+                sa_json = sa_json[1:-1]
+            info = json.loads(sa_json)
+            creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+            _LOG.info("Учетные данные Google успешно созданы из JSON для: %s", info.get("client_email"))
+            return creds
+        except Exception as e:
+            _LOG.error("Ошибка при создании учетных данных из JSON: %s. Пробуем файл...", e)
 
-def _get_client() -> gspread.Client:
+    if sa_file_path and sa_file_path.exists():
+        try:
+            creds = Credentials.from_service_account_file(str(sa_file_path), scopes=_SCOPES)
+            _LOG.info("Учетные данные Google успешно созданы из файла: %s", sa_file_path)
+            return creds
+        except Exception as e:
+            _LOG.error("Ошибка при создании учетных данных из файла %s: %s", sa_file_path, e)
+    elif sa_file_path:
+        # Логируем ошибку, если файл по абсолютному пути не найден
+        _LOG.critical(f"Файл с учетными данными НЕ НАЙДЕН по абсолютному пути: {sa_file_path}")
+
+    raise RuntimeError(
+        "Не удалось создать учетные данные Google. Проверьте GOOGLE_SHEETS_CREDENTIALS_JSON или GOOGLE_SHEETS_CREDENTIALS_FILE в .env")
+
+
+def get_client() -> gspread.Client:
+    # ... (эта функция без изменений)
     global _client
     if _client is None:
-        _client = gspread.authorize(_build_credentials())
+        _LOG.debug("Клиент gspread не инициализирован. Авторизуемся...")
+        creds = _get_credentials()
+        _client = gspread.authorize(creds)
+        _LOG.info("Клиент gspread успешно авторизован.")
     return _client
 
-def _get_spreadsheet() -> gspread.Spreadsheet:
-    global _spreadsheet
-    if _spreadsheet is None:
-        if not _SPREADSHEET_ID:
-            raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not set.")
-        _spreadsheet = _get_client().open_by_key(_SPREADSHEET_ID)
-    return _spreadsheet
 
-def get_worksheet(sheet_name: str) -> pd.DataFrame:
-    ws = _get_spreadsheet().worksheet(sheet_name)
-    records = ws.get_all_records(numeric_value_strategy=gspread.utils.NumericValueStrategy.FLOAT)
-    return pd.DataFrame(records)
-
-def append_row(sheet_name: str, row: List[Any]) -> None:
-    ws = _get_spreadsheet().worksheet(sheet_name)
-    ws.append_row(row, value_input_option="USER_ENTERED")
-
-def upsert_dict_row(sheet_name: str, row_dict: Dict[str, Any]) -> None:
-    ws = _get_spreadsheet().worksheet(sheet_name)
-    header = ws.row_values(1)
-    values = [row_dict.get(col, "") for col in header]
-    ws.append_row(values, value_input_option="USER_ENTERED")
-
-# НОВАЯ ФУНКЦИЯ для сохранения пользователя
-def append_user(profile: Dict, tg_id: int) -> bool:
-    """
-    Сохраняет данные пользователя в лист 'users' в Google Sheets.
-    """
+def get_spreadsheet(client: gspread.Client) -> Spreadsheet:
+    # ... (эта функция без изменений)
     try:
-        # Устанавливаем часовой пояс для корректной даты
-        tz = pytz.timezone('Asia/Almaty')
-        created_at = datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+        sh = client.open_by_key(settings.GOOGLE_SHEET_ID)
+        _LOG.info("Таблица '%s' успешно открыта.", sh.title)
+        return sh
+    except SpreadsheetNotFound:
+        _LOG.critical(
+            f"ТАБЛИЦА С ID '{settings.GOOGLE_SHEET_ID}' НЕ НАЙДЕНА! Проверьте ID и права доступа у сервисного аккаунта.")
+        raise
+    except APIError as e:
+        _LOG.error("Ошибка API при открытии таблицы: %s", e)
+        raise
 
-        user_data = {
-            "tg_id": tg_id,
-            "fio": profile.get("name"),
-            "company name": profile.get("company"),
-            "industry": profile.get("industry"),
-            "position": profile.get("position"),
-            "phone": profile.get("phone"),
-            "created_at": created_at,
-        }
-        # Используем вашу функцию upsert_dict_row для добавления
-        upsert_dict_row(sheet_name="users", row_dict=user_data)
+
+def append_user(profile: Dict[str, Optional[str]], tg_id: int) -> bool:
+    # ... (эта функция без изменений)
+    try:
+        _LOG.info(f"Начинаю синхронную запись пользователя {tg_id} в Google Sheets...")
+        client = get_client()
+        sh = get_spreadsheet(client)
+
+        try:
+            ws = sh.worksheet("users")
+        except WorksheetNotFound:
+            _LOG.warning("Лист 'users' не найден, создаю новый.")
+            header = ["tg_id", "name", "company", "industry", "position", "phone", "created_at"]
+            ws = sh.add_worksheet(title="users", rows=1000, cols=len(header))
+            ws.append_row(header)
+
+        tz = pytz.timezone("Asia/Almaty")
+        created_at = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        row = [
+            str(tg_id),
+            (profile.get("name") or "").strip(),
+            (profile.get("company") or "").strip(),
+            (profile.get("industry") or "").strip(),
+            (profile.get("position") or "").strip(),
+            (profile.get("phone") or "").strip(),
+            created_at,
+        ]
+
+        ws.append_row(row, value_input_option="USER_ENTERED")
+        _LOG.info("Пользователь %s успешно записан в таблицу 'users'.", tg_id)
         return True
+
     except Exception as e:
-        # В реальном проекте здесь лучше логировать ошибку
-        print(f"Error appending user to Google Sheets: {e}")
+        _LOG.exception("!!! КРИТИЧЕСКАЯ ОШИБКА при записи в Google Sheets: %s", e)
         return False
